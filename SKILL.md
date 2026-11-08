@@ -27,6 +27,14 @@ User rules that apply:
 - "Just do it" once the script is approved.
 
 ## Pipeline
+
+> **Human-in-the-loop gate:** The user gives a topic or idea. The agent
+> researches the facts, writes `SCRIPT.md` (~200–250 words for 55–70 s at
+> ~3.7 words/s), and **pauses ONCE** for the user to approve the script.
+> Once the user approves (e.g. "just do it"), every remaining step runs
+> automatically with no further prompts.
+
+### Phase A — Script (requires user approval)
 1. **Topic and facts.** Pick one surprising true story with a physical cause and effect (it should be visual), plus a simple everyday analogy that explains it.
    - Write the facts with their source at the top of `SCRIPT.md`.
 2. **Script** (~3.7 words/s, 55-70 s). Beat formula from the bridge short:
@@ -39,10 +47,19 @@ User rules that apply:
    - **Consequence:** the rule it created.
    - **Callback twist:** the ending.
    - Never describe on screen what the viewer already sees.
-3. **Voice.** Record or generate `voice.wav`, then make its word timings `words.json` (any speech-to-text with word times).
-   - Put them in the project folder, e.g. `~/bridge-short/voice/`.
-   - Hand-fix the word timings. Everything is timed to words.json.
-4. **Shot plan** in `story.ts`: copy `templates/bridge/` (the final bridge source, same as `src/videos/bridge/` of your Remotion project) to `src/videos/<name>/`, register a new composition next to `BridgeShort` in `src/Root.tsx`, and rename it.
+3. **Present `SCRIPT.md` to the user and STOP.** Wait for explicit approval before continuing.
+
+### Phase B — Fully automated (runs after script approval)
+4. **Voice.** Generate `voice.wav` and `words.json` automatically:
+   ```bash
+   python scripts/generate_voice.py SCRIPT.md ~/short-name/voice/
+   ```
+   - Uses the ElevenLabs `/v1/text-to-speech/{voice_id}/with-timestamps` endpoint.
+   - Reads `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` from `.env` (see `.env.example`).
+   - Produces `voice.wav` (48 kHz, mono, 24-bit PCM — the exact format `dsp.read_wav()` expects) and `words.json` (array of `{"w": "word", "s": start_s, "e": end_s}` — the exact schema `timeline.py`, `mix.py`, and `story.ts` depend on).
+   - The script runs automated sanity checks: no zero/negative word durations, chronological monotonicity, and a warning if total duration falls outside the 55–70 s target window.
+   - If any ERROR-level check fails, stop and report. Otherwise continue.
+5. **Shot plan** in `story.ts`: copy `templates/bridge/` (the final bridge source, same as `src/videos/bridge/` of your Remotion project) to `src/videos/<name>/`, register a new composition next to `BridgeShort` in `src/Root.tsx`, and rename it.
    - `SHOTS`: id, a/b frames, light day/golden, crowd mode, `tau` story time.
    - `XFADE`: crossfades at place/time changes.
    - `FLASH_AT`: a white flash after the hook.
@@ -51,33 +68,33 @@ User rules that apply:
    - `DOF`/`dofAt`: lens blur per beat.
    - `FOREGROUND`: near framing props.
    - Every visual reaction lands 0-3 frames before its word.
-5. **World.**
+6. **World.**
    - `lights.ts`: LIGHTS plus the LOOK sky/river/cloud palette per light.
    - `shade.ts`: two-tone shading and `untone()`.
    - `build.ts`: town, houses and Kenney CC0 kit props, recoloured, with sight-line culling of anything blocking a camera.
    - `paint.ts`: HD Canvas2D painted textures with seams painted in as dark tints.
    - `world.ts`: sky shader, fog = horizon colour, river, per-frame posing, sun frozen per shot and camera-relative.
-6. **Characters.**
+7. **Characters.**
    - `toon.ts`: the Canvas2D `Pen` drawing API, 600x1000 design canvas, soles at y = 975, bean heads, stick limbs, plum variable-width outline, face library.
    - `cast.ts`: camera-facing billboards, crowds, effect cards, blinks, walk cycles. All billboards go on the `NOINK` layer.
    - `cardshade.ts`: cards lit by the scene light, no emissive.
-7. **Post** (`Bridge.tsx` + `ink.ts` + `lensblur.ts` + `grade.ts`).
+8. **Post** (`Bridge.tsx` + `ink.ts` + `lensblur.ts` + `grade.ts`).
    - Composer order: ink → lens pre → lens main → bloom → NEUTRAL tone map → grade (MSAA 4).
    - Every pixel parameter scales with output height / 1920.
-8. **Sound** (`~/bridge-short/audio/`: timeline.py, sfx_gen.py, sfx.py, music.py, instruments.py, dsp.py, mix.py).
+9. **Sound** (`~/<short-name>/audio/`: timeline.py, sfx_gen.py, sfx.py, music.py, instruments.py, dsp.py, mix.py).
    - Event table → synthesized SFX plus an original score ducked under the voice.
    - Output: mix.wav (48 kHz, exact length), stems and cues.md.
    - Lock the picture's time constants before the sound is made. Any later timing change means re-running the sound.
-9. **Look checks.** Run `node scripts/bridge-stills.mjs out/<name>/x_ 100,400 0.5`.
-   - Set `BRIDGE_ENTRY=src/sandboxes/<n>/index.tsx` to render a sandbox copy.
-   - Make side-by-sides against reference frames with `python scripts/sbs_sheet.py out.jpg --ours ... --ref ...`.
-   - Send them to an Opus max verifier: 1-3 images, a ≤200-word verdict.
-10. **Final render.**
+10. **Look checks.** Run `node scripts/bridge-stills.mjs out/<name>/x_ 100,400 0.5`.
+    - Set `BRIDGE_ENTRY=src/sandboxes/<n>/index.tsx` to render a sandbox copy.
+    - Make side-by-sides against reference frames with `python scripts/sbs_sheet.py out.jpg --ours ... --ref ...`.
+    - Send them to an Opus max verifier: 1-3 images, a ≤200-word verdict.
+11. **Final render.**
     - `npx remotion render src/index.ts <Comp> out/<name>/video.mp4 --codec h264 --crf 16 --scale 1.3333`
     - Mux with `-map 0:v:0 -map 1:a:0` (Remotion writes a silent audio track).
     - QA: `python scripts/short_qa.py final.mp4 out/<name>/qa shots.json` checks every frame for black, white, frozen and pop frames, plus loudness and sheets.
     - Fix anything it finds, then run a deep Opus audit.
-11. **Deliver.** SendUserFile the final mp4, update memory, write notes.
+12. **Deliver.** SendUserFile the final mp4, update memory, write notes.
 
 ## Final look values (bridge after 4 verifier rounds; all in `templates/bridge/`)
 Start every new short from `templates/bridge/` (copy to `src/videos/<name>/`): the look lives in these values, the
