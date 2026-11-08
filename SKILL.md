@@ -26,6 +26,21 @@ User rules that apply:
 - Save after every step.
 - "Just do it" once the script is approved.
 
+## Setup (once per machine; verified on macOS, Apple Silicon, 2026-11-08)
+- **Tools:** Node, Python 3 with `numpy scipy requests python-dotenv pillow`, ffmpeg on PATH.
+- **Remotion project:** a plain Remotion 4 project (`src/index.ts` → `src/Root.tsx` registering one `<Composition>` per short),
+  `src/videos/bridge/` = a copy of `templates/bridge/`, `scripts/` = a copy of `templates/scripts/`, Kenney models in
+  `public/bridge/kenney/<name>.glb` (GLB folders of Kenney's CC0 Nature Kit + Fantasy Town Kit; names listed in `KENNEY`
+  in world.ts; missing models are skipped, so the scene still renders without them, only barer). The Fantasy Town
+  GLBs load an external texture: also copy the kit's `Models/GLB format/Textures/colormap.png` to
+  `public/bridge/kenney/Textures/colormap.png`, or every town prop logs "Couldn't load texture" and renders untextured.
+- **Pinned versions (do not "upgrade"):** `remotion`/`@remotion/*` 4.0.541, `react`/`react-dom` 19.3.1,
+  `@react-three/fiber` 9.8.2, **`@react-three/postprocessing` 3.0.4**, `postprocessing` 6.39.6, `three` 0.187.0,
+  `typescript` 5.x. postprocessing ≥ 3.0.5 creates its composer asynchronously (useEffect + state), Remotion's
+  ThreeCanvas advances exactly once per frame before that, and every still / every first frame of a render comes out
+  as the empty background colour with no error. three ≥ 0.188 is outside postprocessing 6.39's peer range.
+- `.env` (ElevenLabs key, voice, optional speed) lives in the skill repo root or the Remotion project root.
+
 ## Pipeline
 
 > **Human-in-the-loop gate:** The user gives a topic or idea. The agent
@@ -47,6 +62,8 @@ User rules that apply:
    - **Consequence:** the rule it created.
    - **Callback twist:** the ending.
    - Never describe on screen what the viewer already sees.
+   - Wrap the spoken text in `<!-- narration -->` ... `<!-- /narration -->` (see `templates/SCRIPT_example.md`).
+     Only that text goes to the voice; facts, sources and shot notes outside the markers are never spoken.
 3. **Present `SCRIPT.md` to the user and STOP.** Wait for explicit approval before continuing.
 
 ### Phase B — Fully automated (runs after script approval)
@@ -56,6 +73,9 @@ User rules that apply:
    ```
    - Uses the ElevenLabs `/v1/text-to-speech/{voice_id}/with-timestamps` endpoint.
    - Reads `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` from `.env` (see `.env.example`).
+   - Speaking speed defaults to 1.15 (`ELEVENLABS_SPEED`, 0.7-1.2): at 1.0 stock voices run ~2.8 words/s and the
+     218-word bridge script came out 77 s; at 1.15 it is 64.5 s / 3.4 words/s. If the duration warning fires, adjust
+     the speed (or trim the script) and re-run before building any timing on words.json.
    - Produces `voice.wav` (48 kHz, mono, 24-bit PCM — the exact format `dsp.read_wav()` expects) and `words.json` (array of `{"w": "word", "s": start_s, "e": end_s}` — the exact schema `timeline.py`, `mix.py`, and `story.ts` depend on).
    - The script runs automated sanity checks: no zero/negative word durations, chronological monotonicity, and a warning if total duration falls outside the 55–70 s target window.
    - If any ERROR-level check fails, stop and report. Otherwise continue.
@@ -85,14 +105,16 @@ User rules that apply:
    - Event table → synthesized SFX plus an original score ducked under the voice.
    - Output: mix.wav (48 kHz, exact length), stems and cues.md.
    - Lock the picture's time constants before the sound is made. Any later timing change means re-running the sound.
-10. **Look checks.** Run `node scripts/bridge-stills.mjs out/<name>/x_ 100,400 0.5`.
+10. **Look checks.** Run `REMOTION_TMP=$PWD/.remotion-tmp COMP=<Comp> node scripts/bridge-stills.mjs out/<name>/x_ 100,400 0.5`
+    (`COMP` defaults to `BridgeShort`; `REMOTION_GL=swangle` is the CPU fallback if the GPU path fails).
     - Set `BRIDGE_ENTRY=src/sandboxes/<n>/index.tsx` to render a sandbox copy.
     - Make side-by-sides against reference frames with `python scripts/sbs_sheet.py out.jpg --ours ... --ref ...`.
     - Send them to an Opus max verifier: 1-3 images, a ≤200-word verdict.
 11. **Final render.**
-    - `npx remotion render src/index.ts <Comp> out/<name>/video.mp4 --codec h264 --crf 16 --scale 1.3333`
-    - Mux with `-map 0:v:0 -map 1:a:0` (Remotion writes a silent audio track).
-    - QA: `python scripts/short_qa.py final.mp4 out/<name>/qa shots.json` checks every frame for black, white, frozen and pop frames, plus loudness and sheets.
+    - `TMPDIR=$PWD/.remotion-tmp npx remotion render src/index.ts <Comp> out/<name>/video.mp4 --codec h264 --crf 16 --scale 1.3333`
+    - Mux: `ffmpeg -i out/<name>/video.mp4 -i <short>/audio/mix.wav -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 320k -shortest out/<name>/final.mp4`.
+    - QA: `python scripts/bridge_shots.py src/videos/<name>/story.ts` (writes `out/<name>/shots.json`), then
+      `python scripts/short_qa.py out/<name>/final.mp4 out/<name>/qa out/<name>/shots.json` checks every frame for black, white, frozen and pop frames, plus loudness and sheets.
     - Fix anything it finds, then run a deep Opus audit.
 12. **Deliver.** SendUserFile the final mp4, update memory, write notes.
 
@@ -153,7 +175,7 @@ lighting 5-6, ink 6, textures 5-6, characters 7, depth 6-7, composition 6-7 (fro
    - char: toon.ts, cast.ts, cardshade.ts (character drawing, posing, card lighting, fx cards)
    - post: ink.ts, Bridge.tsx, lensblur.ts (outline pass, composer, lens blur, bloom)
    Agents only edit their own files in their own sandbox and render stills with `BRIDGE_ENTRY=src/sandboxes/<n>/index.tsx node scripts/bridge-stills.mjs out/<name>/<n>/x_ <frames> 0.5`.
-3. **Merge** with `python scripts/bridge_merge.py [cam,world,mat,char,post]` (backs main up to `backup/bridge_<time>/`, copies owned files only). Then `npx tsc --noEmit` (filter to the project folder), then **re-sync every sandbox from main** (`cp -f src/videos/<name>/* src/videos/<name>_<n>/`) before the next round.
+3. **Merge** from the Remotion project root with `python scripts/bridge_merge.py [cam,world,mat,char,post] <name>` (backs main up to `backup/<name>_<time>/`, copies owned files only). Then `npx tsc --noEmit` (filter to the project folder), then **re-sync every sandbox from main** (`cp -f src/videos/<name>/* src/videos/<name>_<n>/`) before the next round.
 4. **Verify** with a fresh Opus max agent: side-by-side sheets (`python scripts/sbs_sheet.py out.jpg --ours a b --ref r1 r2`), score each area out of 10 (colour day / golden, lighting, ink, textures, characters, depth, composition) plus a numbered fix list with frame numbers. Map each fix to the file owner and resume that owner's agent with SendMessage (keeps its context). Bridge scores: round 1 5/3/4/5/4/7/4/6 → round 2 5/4/5/6/4/7/6/6 → round 3 see notes.
 5. Contracts between owners live in exported constants (e.g. `NOINK` layer from ink.ts, `dofAt`/`FOREGROUND` from story.ts, `LIGHTS`/`LOOK` from lights.ts). Changing a contract means telling every owner that reads it.
 
@@ -162,7 +184,7 @@ lighting 5-6, ink 6, textures 5-6, characters 7, depth 6-7, composition 6-7 (fro
 - Cameras end up inside houses: the sight-line culler in build.ts/world.ts removes anything blocking any camera ray.
 - Ink in the same merged effect pass as DOF gets overwritten. Ink must be its own pass before the blur.
 - Pixel-sized post parameters must scale with resolution: stills are at 0.5, the final at 1.333. R3F clamps dpr to ≥ 1, so `--scale 0.5` stills still render a 1080x1920 buffer.
-- **Disk:** every Remotion bundle copies `public/` (~1.3 GB) into `the temp folder\remotion-webpack-bundle-*` and never deletes it. 60+ GB filled the system drive during the bridge passes and a render died with ENOSPC. Always render with `export TEMP='<big drive>/remotion-tmp' TMP='<big drive>/remotion-tmp'` (bridge-stills.mjs sets it itself) and ask the user before deleting old bundle folders in the shared the temp folder (auto mode blocks the sweep). <big drive>/remotion-tmp fills too (~500 folders / 110 GB after the 4 bridge rounds): when a project is finished and nothing is rendering, delete its `remotion-webpack-bundle-*` and `puppeteer_dev_chrome_profile-*` folders there.
+- **Disk:** every Remotion bundle copies `public/` (~1.3 GB) into `the temp folder\remotion-webpack-bundle-*` and never deletes it. 60+ GB filled the system drive during the bridge passes and a render died with ENOSPC. Always render with `export TEMP='<big drive>/remotion-tmp' TMP='<big drive>/remotion-tmp'` on Windows, `export TMPDIR=...` on macOS/Linux (TEMP/TMP are ignored there; bridge-stills.mjs sets all three from `REMOTION_TMP`) and ask the user before deleting old bundle folders in the shared the temp folder (auto mode blocks the sweep). <big drive>/remotion-tmp fills too (~500 folders / 110 GB after the 4 bridge rounds): when a project is finished and nothing is rendering, delete its `remotion-webpack-bundle-*` and `puppeteer_dev_chrome_profile-*` folders there.
 - In JS strings write `"<big drive>/remotion-tmp"`, never `"<big drive>\remotion-tmp"` (`\r` becomes a carriage return).
 - Remotion writes a silent audio track: mux with `-map 0:v:0 -map 1:a:0`.
 - Sub-agents can't write report files in this harness: ask them for a ≤150-word final message and save it yourself to `out/<name>/<n>/REPORT.md`.

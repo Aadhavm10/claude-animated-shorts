@@ -5,13 +5,16 @@ Usage:
     python scripts/generate_voice.py <script_file> <output_dir>
 
     script_file: Path to SCRIPT.md or a plain-text narration file.
-                 Lines starting with '#' or blank lines are ignored.
-                 The first non-blank, non-header block of text is taken as narration.
+                 Preferred: wrap the spoken text in <!-- narration --> ... <!-- /narration -->.
+                 Without markers, the leading header / `Key:` note paragraphs are skipped and narration
+                 runs until the next markdown header or '---' (see extract_narration).
     output_dir:  Where to write voice.wav and words.json (e.g. ~/short-name/voice/).
 
-Environment variables (or .env at the repo root):
+Environment variables (or .env in the current folder, the repo root or the Remotion project root):
     ELEVENLABS_API_KEY  – required
-    ELEVENLABS_VOICE_ID – optional (default: a]ElevenLabs stock voice)
+    ELEVENLABS_VOICE_ID – optional (default: the ElevenLabs stock voice "Adam")
+    ELEVENLABS_MODEL    – optional (default: eleven_multilingual_v2)
+    ELEVENLABS_SPEED    – optional speaking speed 0.7-1.2 (default: 1.15)
 
 Requirements: requests, python-dotenv (optional), ffmpeg on PATH.
 """
@@ -36,6 +39,10 @@ DEFAULT_VOICE_SETTINGS = {
     "similarity_boost": 0.78,
     "style": 0.15,
     "use_speaker_boost": True,
+    # The style is a fast, steady narrator (~3.2-3.7 words/s overall). At speed 1.0 ElevenLabs stock voices land
+    # near 2.8 words/s (the 218-word bridge script ran 77 s instead of 67.5 s), so speed up by default.
+    # ElevenLabs accepts 0.7-1.2; override with ELEVENLABS_SPEED.
+    "speed": 1.15,
 }
 
 API_BASE = "https://api.elevenlabs.io"
@@ -45,12 +52,16 @@ API_BASE = "https://api.elevenlabs.io"
 # Helpers
 # ---------------------------------------------------------------------------
 def load_env():
-    """Load .env from the repo root (one or two levels up from this script)."""
+    """Load the first .env found: the current folder, one or two levels up from this script (the skill repo
+    root, or the Remotion project root when the script is copied to <project>/scripts/), then the installed skill."""
     try:
         from dotenv import load_dotenv
+        here = os.path.dirname(os.path.abspath(__file__))
         for up in [
-            os.path.join(os.path.dirname(__file__), "..", ".."),  # repo root
-            os.path.join(os.path.dirname(__file__), ".."),
+            os.getcwd(),
+            os.path.join(here, "..", ".."),  # skill repo root (templates/scripts/ -> repo)
+            os.path.join(here, ".."),        # Remotion project root (<project>/scripts/ -> project)
+            os.path.expanduser("~/.claude/skills/cartoon-3d-short"),
         ]:
             env_path = os.path.join(os.path.abspath(up), ".env")
             if os.path.isfile(env_path):
@@ -60,37 +71,62 @@ def load_env():
         pass  # python-dotenv not installed; fall back to environment
 
 
-def extract_narration(path: str) -> str:
-    """Pull narration text from a SCRIPT.md or plain text file.
+NARRATION_OPEN = "<!-- narration -->"
+NARRATION_CLOSE = "<!-- /narration -->"
 
-    Skips lines that are markdown headers (start with '#'), metadata blocks
-    delimited by '---', and leading blank lines. Returns the remaining
-    non-empty lines joined by spaces (single paragraph for the TTS call).
+
+def extract_narration(path: str) -> str:
+    """Pull the spoken narration out of a SCRIPT.md or plain text file.
+
+    1. If the file has `<!-- narration -->` ... `<!-- /narration -->` markers, exactly the text between them
+       is spoken (the preferred SCRIPT.md layout; everything else in the file is notes).
+    2. Otherwise the file is split into blank-line-separated paragraphs. Leading paragraphs that start with a
+       markdown header ('#'), a `Key:` metadata line or YAML front matter ('---') are notes, including their
+       continuation lines (e.g. a multi-line `Facts:` block). Narration is every paragraph after that, up to
+       the next markdown header or '---' line (shot notes, appendices and so on are never spoken).
     """
     with open(path, encoding="utf-8") as f:
-        lines = f.readlines()
+        raw = f.read()
 
-    # Strip front-matter (--- ... ---) if present
-    in_frontmatter = False
-    narration_lines: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "---":
-            in_frontmatter = not in_frontmatter
-            continue
-        if in_frontmatter:
-            continue
-        # Skip markdown headers and blank lines before any narration
-        if stripped.startswith("#"):
-            continue
-        if not stripped and not narration_lines:
-            continue
-        # Skip metadata-looking lines (key: value at the top)
-        if not narration_lines and re.match(r"^[A-Z][a-z]+:", stripped):
-            continue
-        narration_lines.append(stripped)
+    if NARRATION_OPEN in raw:
+        i = raw.index(NARRATION_OPEN) + len(NARRATION_OPEN)
+        j = raw.find(NARRATION_CLOSE, i)
+        if j < 0:
+            raise ValueError(f"{path}: '{NARRATION_OPEN}' has no matching '{NARRATION_CLOSE}'")
+        text = "\n".join(l.strip() for l in raw[i:j].splitlines() if l.strip())
+        if not text:
+            raise ValueError(f"No narration text between the markers in {path}")
+        return text
 
-    text = "\n".join(narration_lines).strip()
+    # YAML front matter at the very top
+    lines = raw.splitlines()
+    if lines and lines[0].strip() == "---":
+        end = next((k for k in range(1, len(lines)) if lines[k].strip() == "---"), None)
+        if end is not None:
+            lines = lines[end + 1:]
+
+    paras: list[list[str]] = []
+    cur: list[str] = []
+    for line in lines + [""]:
+        s = line.strip()
+        if s:
+            cur.append(s)
+        elif cur:
+            paras.append(cur)
+            cur = []
+
+    is_note = lambda p: p[0].startswith("#") or p[0] == "---" or re.match(r"^[A-Z][A-Za-z ]{0,30}:\s", p[0]) is not None
+    k = 0
+    while k < len(paras) and is_note(paras[k]):
+        k += 1
+    out: list[str] = []
+    for p in paras[k:]:
+        stop = next((n for n, s in enumerate(p) if s.startswith("#") or s == "---"), None)
+        out.extend(p[:stop] if stop is not None else p)
+        if stop is not None:
+            break
+
+    text = "\n".join(out).strip()
     if not text:
         raise ValueError(f"No narration text found in {path}")
     return text
@@ -108,7 +144,8 @@ def call_elevenlabs(text: str, api_key: str, voice_id: str, model: str) -> dict:
     payload = {
         "text": text,
         "model_id": model,
-        "voice_settings": DEFAULT_VOICE_SETTINGS,
+        "voice_settings": {**DEFAULT_VOICE_SETTINGS,
+                           **({"speed": float(os.environ["ELEVENLABS_SPEED"])} if os.environ.get("ELEVENLABS_SPEED") else {})},
     }
 
     print(f"[generate_voice] Calling ElevenLabs ({model}, voice {voice_id[:8]}…)")
@@ -135,8 +172,7 @@ def decode_audio(audio_b64: str, out_dir: str) -> str:
         "-i", raw_path,
         "-ar", str(REQUIRED_SR),
         "-ac", str(REQUIRED_CHANNELS),
-        "-sample_fmt", "s24",    # 24-bit
-        "-acodec", "pcm_s24le",
+        "-acodec", "pcm_s24le",  # 24-bit ("-sample_fmt s24" is not a valid ffmpeg sample format)
         wav_path,
     ]
     print(f"[generate_voice] Converting to {REQUIRED_SR} Hz mono 24-bit WAV …")

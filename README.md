@@ -20,7 +20,7 @@ Proven on **The Bridge That Fell for a Song**, a 67 s short about the 1831 Broug
 
 ## Install
 1. Copy this folder to `~/.claude/skills/cartoon-3d-short/` (clone it there, or download the ZIP).
-2. You need [Remotion](https://www.remotion.dev/) with `@remotion/three`, plus Node, Python 3 and ffmpeg.
+2. You need [Remotion](https://www.remotion.dev/) with `@remotion/three`, plus Node, Python 3 (numpy, scipy, requests, python-dotenv, pillow) and ffmpeg. Use the exact package versions in the "Setup" section of `SKILL.md`: newer `@react-three/postprocessing` renders blank frames.
 3. In Claude Code, say: *"Use the cartoon short skill and make a short about …"*.
 
 Claude then follows `SKILL.md`: topic and facts, then script, then voice, then the shot plan in `story.ts`, then stills, then renders. Agents check your frames against the reports and the frames, and you get the final 2K render and sound mix.
