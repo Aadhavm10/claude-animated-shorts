@@ -21,7 +21,7 @@ User rules that apply:
 - Voice: one steady tone.
 - Jokes are researched real facts.
 - Standard mix: music +3 dB, SFX -6 dB, voice unchanged.
-- Final export 2K vertical: 1440x2560, `--scale 1.3333`.
+- Final export 2K vertical: 1440x2560, `--scale=1.3333333333333333` (exactly 4/3: `1.3333` gives a 2559.94 px height, which Remotion 4.0.541 rejects).
 - Opus max verifies every check.
 - Save after every step.
 - "Just do it" once the script is approved.
@@ -52,6 +52,10 @@ User rules that apply:
 ### Phase A — Script (requires user approval)
 1. **Topic and facts.** Pick one surprising true story with a physical cause and effect (it should be visual), plus a simple everyday analogy that explains it.
    - Write the facts with their source at the top of `SCRIPT.md`.
+   - Prefer stories with **human folly** (someone proud / careless / stubborn), **a named everyman** to follow, **funny
+     real details** (an egg fried on the pavement, a £946 payout) and **a callback twist** (the same architect's earlier
+     "death ray"). A pure disaster with no culprit and no twist (Lake Peigneur, 1980) was rejected as weaker, and it is
+     over-covered online. If the user's own topic is weak on these, say so honestly and offer stronger picks.
 2. **Script** (~3.7 words/s, 55-70 s). Beat formula from the bridge short:
    - **Hook:** the absurd fact in one line ("Seventy-four soldiers knocked down an iron bridge just by walking across it.").
    - **Setting:** year, place, pride.
@@ -79,6 +83,14 @@ User rules that apply:
    - Produces `voice.wav` (48 kHz, mono, 24-bit PCM — the exact format `dsp.read_wav()` expects) and `words.json` (array of `{"w": "word", "s": start_s, "e": end_s}` — the exact schema `timeline.py`, `mix.py`, and `story.ts` depend on).
    - The script runs automated sanity checks: no zero/negative word durations, chronological monotonicity, and a warning if total duration falls outside the 55–70 s target window.
    - If any ERROR-level check fails, stop and report. Otherwise continue.
+   - **Every voice has its own pace.** At the same speed setting two voices differed by 20 s on one script
+     (FLpz0UhC... gave 45 s at 1.2 and 64 s at 0.94; OEHTkiHZ... 57.6 s at 1.0 and 62.8 s at 0.9). Generate once,
+     then retune `ELEVENLABS_SPEED` to land at ~3.6 words/s, and keep the tuned speed in `.env` with the voice.
+   - **Voice Library voices need a paid ElevenLabs plan** (free plans get `402 paid_plan_required` via the API;
+     only premade voices work). Before changing voices, render the hook line in a few candidates (plain
+     `/v1/text-to-speech/{id}`, ~100 characters each) into `<short>/voice_samples/` and let the user listen.
+   - Some voices barely pause at full stops. Check the gaps against the script's beats; `scripts/pad_pauses.py`
+     lengthens short punctuation gaps with silence (the words stay untouched).
 5. **Shot plan** in `story.ts`: copy `templates/bridge/` (the final bridge source, same as `src/videos/bridge/` of your Remotion project) to `src/videos/<name>/`, register a new composition next to `BridgeShort` in `src/Root.tsx`, and rename it.
    - `SHOTS`: id, a/b frames, light day/golden, crowd mode, `tau` story time.
    - `XFADE`: crossfades at place/time changes.
@@ -111,12 +123,40 @@ User rules that apply:
     - Make side-by-sides against reference frames with `python scripts/sbs_sheet.py out.jpg --ours ... --ref ...`.
     - Send them to an Opus max verifier: 1-3 images, a ≤200-word verdict.
 11. **Final render.**
-    - `TMPDIR=$PWD/.remotion-tmp npx remotion render src/index.ts <Comp> out/<name>/video.mp4 --codec h264 --crf 16 --scale 1.3333`
+    - `TMPDIR=$PWD/.remotion-tmp npx remotion render src/index.ts <Comp> out/<name>/video.mp4 --codec h264 --crf 16 --scale=1.3333333333333333 --gl=angle`
+      (`--gl=angle` = the GPU. Without it Chrome draws on the CPU: ~0.6 fps at 2K and the page dies at crossfades,
+      where a second 3D canvas mounts. If even a 1-frame `--gl=angle` render times out connecting to the browser, the
+      macOS GPU is wedged from an earlier hung render: reboot, don't keep retrying.)
     - Mux: `ffmpeg -i out/<name>/video.mp4 -i <short>/audio/mix.wav -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 320k -shortest out/<name>/final.mp4`.
     - QA: `python scripts/bridge_shots.py src/videos/<name>/story.ts` (writes `out/<name>/shots.json`), then
       `python scripts/short_qa.py out/<name>/final.mp4 out/<name>/qa out/<name>/shots.json` checks every frame for black, white, frozen and pop frames, plus loudness and sheets.
     - Fix anything it finds, then run a deep Opus audit.
-12. **Deliver.** SendUserFile the final mp4, update memory, write notes.
+    - Always write the render log to a file (`> out/<name>/render.log 2>&1`): piping it through `tail` hid the real
+      error behind a stack trace. A render dying at the same kind of frame twice (crossfades) is a pattern, not luck.
+12. **Deliver.** Open/send the final mp4, update memory, write notes. Offer a title + description (facts and
+    sources from SCRIPT.md, no reference-channel name) and a pre-upload checklist: watch once with sound (the agent
+    can't listen), platform AI-content labels, real people shown.
+13. **After the user says it is uploaded: clean up.** Move the video to `<workspace>/final videos/<Title>.mp4`, then
+    delete everything else of that short: `<short>/` (script, voices, samples, audio, stems, backups, notes),
+    `out/<name>/` renders, `backup/<name>_*`, and the temp bundles in `.remotion-tmp/` (only when nothing is
+    rendering). KEEP the scene code `src/videos/<name>/` (+ its composition in Root.tsx): its sets are reused by later
+    shorts. Show the user the list and sizes and confirm once before deleting; update memory so it no longer points
+    at deleted files.
+
+## Re-voicing a finished short (same script, new voice; proven on the Walkie-Talkie short, 2026-11-09)
+Don't re-author frames. Keep the picture and sound in "story time" (the narration they were built on) and warp:
+1. Move the old take to `<short>/voice_story/`, generate the new one into `<short>/voice/` (tune its speed, above).
+2. `python3 scripts/pad_pauses.py <short>/voice <short>/voice_story/words.json` if the new voice barely pauses
+   (without it the camera lurched 2-3x at every sentence end).
+3. `python3 scripts/make_retime.py <short> src/videos/<name> <story TOTAL frames> "<voice note>" [events.json]`
+   writes `retime.ts` + appends `M()` to `timeline.py`, anchored on every hit word + sentence start (events.json =
+   story frames of every event / cut / camera key). Aim for local speed 0.7-1.4; it prints the range.
+4. One-time wiring: `<Name>.tsx` evaluates the scene at `toStory(useCurrentFrame())` and exports `NEW_TOTAL` as the
+   duration; the white flash and `kickAt()` count in output frames (`toOutput`), so flips stay one frame each;
+   music `Band.add` and sfx `render` place at `T.M(t)`; ambience beds last `M(b) - M(a)`; `mix.py` maps SECTIONS /
+   FLASH / REPORT through `M`, and `N` = `DUR_NEW`. Clear `audio/_cache` before re-mixing.
+5. Render, then map `shots.json` through `M` before QA (else every cut shows as an "unplanned pop").
+6. The picture didn't change, so the user accepted a lighter check: QA + frames grabbed at ~12 key words.
 
 ## Final look values (bridge after 4 verifier rounds; all in `templates/bridge/`)
 Start every new short from `templates/bridge/` (copy to `src/videos/<name>/`): the look lives in these values, the
@@ -191,6 +231,19 @@ lighting 5-6, ink 6, textures 5-6, characters 7, depth 6-7, composition 6-7 (fro
 - Scratch `.ts` files inside `out/` break `tsc`: name them `.txt`.
 - 2K renders run ~4 fps (≈10 min for 67 s). Stills at 0.5 take 3-8 s each after a ~40 s bundle.
 - Film grain at 2.5 % made the 2K file 910 MB instead of ~250 MB and will turn to mush on YouTube; the reference has none. Keep it off.
+
+## Lessons from the Walkie-Talkie short (2026-11-08)
+- A 9:16 frame is only ~20-25 deg wide: put every subject near the view axis; cameras may stand behind a building line (the sight-line culler removes that house).
+- The ground plane must cover the whole city (it stopped 60 m out and the sky showed under floating blocks); fill the city on a street grid, not scattered boxes.
+- Sight lines must run all the way to the subject (cap ~160 m), or near rooftops block aerials; changing one camera move changes what gets culled - re-check other shots.
+- Freeze the sun's shadow box per shot (a per-frame box made large shadows pop); never put the lens inside an additive light shaft; keep additive ground decals at road level (they painted over tyres).
+- Scale drawn light rays with camera distance; draw incoming and reflected rays in different colours, from different directions, or they read as zig-zags.
+- Single-sided open cylinders (pans, cups) lose their far inner wall: DoubleSide.
+- Stills can't show motion bugs: the deep audit on the rendered video caught a one-frame vanish, whip pans and a sunk character. Always run it, and have the auditor re-check its own findings.
+- Run the WHOLE verification before calling a short done (Opus max reviewer rounds until the scores plateau, ~4, then
+  the deep audit + re-check). One round + no audit shipped a hollow frying pan and a tower standing in a void; the
+  user caught both. Report the scores per round. (Walkie: 5/6/5/7/6 -> 7/7/6/7/6, audit FIX FIRST -> SHIP.)
+- Main session at high effort, reviewer + audit agents at Opus max: the user's split.
 
 ## Readability traps the verifier caught (check every new prop/shot for these)
 - **A swing drawn as one rope that disappears behind the kid reads as a HANGING.** Always two ropes to a wide plank
